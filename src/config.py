@@ -69,6 +69,29 @@ CITY_COORDS = {
 # Set to None or an empty set to disable filtering (consider all cities).
 TRADEABLE_CITIES = {"new york", "nyc", "miami", "chicago", "los angeles", "san francisco"}
 
+# Forecast models, with weights for the weighted-median ensemble.
+# JMA (Japan) and Meteo-France are tuned for their home regions and are
+# dropped for US cities -- they were the biggest source of spread/outliers
+# without adding accuracy for North America.
+US_MODEL_WEIGHTS = {
+    "ecmwf_ifs025": 2.0,    # generally the strongest global model
+    "gfs_seamless": 1.5,    # NOAA, native to the US
+    "icon_seamless": 1.0,
+    "gem_seamless": 1.0,    # Environment Canada, strong for North America
+}
+GLOBAL_MODEL_WEIGHTS = {
+    **US_MODEL_WEIGHTS,
+    "jma_seamless": 1.0,
+    "meteofrance_seamless": 1.0,
+}
+
+
+def model_weights_for_city(city: str) -> dict[str, float]:
+    """Pick the model weight set for a city: US-tuned models for US cities."""
+    if city in TRADEABLE_CITIES:
+        return US_MODEL_WEIGHTS
+    return GLOBAL_MODEL_WEIGHTS
+
 # Polymarket sweet spot per Polymarket System.md
 EDGE_MIN_PRICE = 0.60
 EDGE_MAX_PRICE = 0.85

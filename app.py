@@ -9,7 +9,14 @@ import pandas as pd
 import streamlit as st
 
 from src.analysis import scored_buckets
-from src.config import CITY_COORDS, EDGE_MAX_PRICE, EDGE_MIN_PRICE, MIN_EDGE, TRADEABLE_CITIES
+from src.config import (
+    CITY_COORDS,
+    EDGE_MAX_PRICE,
+    EDGE_MIN_PRICE,
+    MIN_EDGE,
+    TRADEABLE_CITIES,
+    model_weights_for_city,
+)
 from src.forecast_ensemble import get_ensemble_forecast
 
 st.set_page_config(page_title="Polymarket Weather Bot", layout="wide")
@@ -27,17 +34,43 @@ st.caption(
 )
 
 forecast_days = st.slider("Days ahead to show", 1, 7, 3)
+threshold = st.number_input(
+    "Bet threshold: 'will the high be OVER ___ °F?'",
+    value=90.0,
+    step=1.0,
+    help="Used to suggest a YES/NO trade for each row, based on the predicted "
+         "high vs. this number and how much the models agree (spread).",
+)
 
 if st.button("Refresh forecast", type="primary") or "forecast" not in st.session_state:
     with st.spinner("Fetching multi-model forecasts..."):
         forecast_rows = []
         for city in tradeable:
             lat, lon = CITY_COORDS[city]
-            for day in get_ensemble_forecast(lat, lon, forecast_days=forecast_days):
+            weights = model_weights_for_city(city)
+            for day in get_ensemble_forecast(lat, lon, forecast_days=forecast_days, weights=weights):
                 forecast_rows.append({"city": city, **day})
         st.session_state["forecast"] = forecast_rows
 
 forecast_rows = st.session_state.get("forecast", [])
+
+
+def _confidence(spread: float) -> str:
+    if spread <= 2:
+        return "high"
+    if spread <= 5:
+        return "medium"
+    return "low"
+
+
+def _trade(predicted_high: float, spread: float, threshold: float) -> str:
+    margin = predicted_high - threshold
+    half_spread = spread / 2
+    if abs(margin) <= half_spread:
+        return "Skip — too close to call"
+    side = "YES (over)" if margin > 0 else "NO (under)"
+    return f"Bet {side}"
+
 
 if forecast_rows:
     forecast_df = pd.DataFrame([
@@ -48,6 +81,8 @@ if forecast_rows:
             "Model range": f"{r['min_f']} – {r['max_f']}",
             "Spread (°F)": r["spread_f"],
             "Models used": r["model_count"],
+            "Confidence": _confidence(r["spread_f"]),
+            "Trade": _trade(r["predicted_high_f"], r["spread_f"], threshold),
         }
         for r in forecast_rows
     ])
@@ -58,8 +93,11 @@ if forecast_rows:
             st.write(f"**{r['city'].title()} — {r['date']}**: {r['per_model']}")
 
     st.info(
-        "Lower spread = models agree = more confident. A spread of 10°F+ "
-        "means models disagree a lot — be cautious betting an exact threshold."
+        "Trade logic: if the predicted high is more than half the model "
+        "spread away from your threshold, that side is suggested with "
+        "confidence based on how tightly the models agree (spread ≤2°F = "
+        "high, ≤5°F = medium, >5°F = low). If the predicted high is within "
+        "half the spread of your threshold, it's a coin flip — skip it."
     )
 else:
     st.info("Click 'Refresh forecast' to load.")

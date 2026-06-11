@@ -2,39 +2,47 @@
 Multi-model ensemble forecast for daily high temperature.
 
 Open-Meteo can return forecasts from several independent weather models in
-one request. Averaging/medianing across them gives a more accurate "highest
-temp today/tomorrow" estimate than any single model, and the spread between
-models is a useful confidence signal.
+one request. Combining them with a weighted median gives a more accurate
+"highest temp today/tomorrow" estimate than any single model, and the spread
+between models is a useful confidence signal.
 """
-
-import statistics
 
 import requests
 
-from src.config import OPEN_METEO_URL
+from src.config import GLOBAL_MODEL_WEIGHTS, OPEN_METEO_URL
 
-MODELS = [
-    "ecmwf_ifs025",
-    "gfs_seamless",
-    "icon_seamless",
-    "gem_seamless",
-    "jma_seamless",
-    "meteofrance_seamless",
-]
+# Default model set if no weights are given (used by callers/tests that
+# don't care about region-specific tuning).
+MODELS = list(GLOBAL_MODEL_WEIGHTS)
 
 
-def summarize_daily(daily: dict, models: list[str] = MODELS) -> list[dict]:
+def weighted_median(values: list[float], weights: list[float]) -> float:
+    """
+    Weighted median: the value at which cumulative weight first reaches half
+    of the total weight, after sorting by value.
+    """
+    pairs = sorted(zip(values, weights))
+    total = sum(weights)
+    cumulative = 0.0
+    for value, weight in pairs:
+        cumulative += weight
+        if cumulative >= total / 2:
+            return value
+    return pairs[-1][0]
+
+
+def summarize_daily(daily: dict, weights: dict[str, float] = GLOBAL_MODEL_WEIGHTS) -> list[dict]:
     """
     Turn Open-Meteo's per-model `daily` response into one summary row per
-    date: median/mean/min/max high temp across models, plus the per-model
-    breakdown.
+    date: weighted-median/min/max high temp across the given models, plus
+    the per-model breakdown.
     """
     dates = daily.get("time", [])
     results = []
 
     for i, day in enumerate(dates):
         per_model = {}
-        for model in models:
+        for model in weights:
             key = f"temperature_2m_max_{model}"
             values = daily.get(key)
             if values is None or i >= len(values) or values[i] is None:
@@ -45,10 +53,10 @@ def summarize_daily(daily: dict, models: list[str] = MODELS) -> list[dict]:
             continue
 
         values = list(per_model.values())
+        model_weights = [weights[m] for m in per_model]
         results.append({
             "date": day,
-            "predicted_high_f": round(statistics.median(values), 1),
-            "mean_f": round(statistics.mean(values), 1),
+            "predicted_high_f": round(weighted_median(values, model_weights), 1),
             "min_f": round(min(values), 1),
             "max_f": round(max(values), 1),
             "spread_f": round(max(values) - min(values), 1),
@@ -59,7 +67,12 @@ def summarize_daily(daily: dict, models: list[str] = MODELS) -> list[dict]:
     return results
 
 
-def get_ensemble_forecast(lat: float, lon: float, forecast_days: int = 3) -> list[dict]:
+def get_ensemble_forecast(
+    lat: float,
+    lon: float,
+    forecast_days: int = 3,
+    weights: dict[str, float] = GLOBAL_MODEL_WEIGHTS,
+) -> list[dict]:
     """Fetch and summarize the multi-model daily high temp forecast for a location."""
     resp = requests.get(
         OPEN_METEO_URL,
@@ -70,10 +83,10 @@ def get_ensemble_forecast(lat: float, lon: float, forecast_days: int = 3) -> lis
             "temperature_unit": "fahrenheit",
             "timezone": "auto",
             "forecast_days": forecast_days,
-            "models": ",".join(MODELS),
+            "models": ",".join(weights),
         },
         timeout=30,
     )
     resp.raise_for_status()
     data = resp.json()
-    return summarize_daily(data.get("daily", {}))
+    return summarize_daily(data.get("daily", {}), weights=weights)
