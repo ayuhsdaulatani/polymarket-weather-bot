@@ -32,7 +32,42 @@ CITY_COORDS = {
     "wellington": (-41.2865, 174.7762),
     "toronto": (43.6532, -79.3832),
     "dubai": (25.2048, 55.2708),
+    # Added after surveying all active "Highest temperature" events
+    "amsterdam": (52.3676, 4.9041),
+    "ankara": (39.9334, 32.8597),
+    "beijing": (39.9042, 116.4074),
+    "buenos aires": (-34.6037, -58.3816),
+    "busan": (35.1796, 129.0756),
+    "cape town": (-33.9249, 18.4241),
+    "chengdu": (30.5728, 104.0668),
+    "chongqing": (29.4316, 106.9123),
+    "guangzhou": (23.1291, 113.2644),
+    "helsinki": (60.1699, 24.9384),
+    "istanbul": (41.0082, 28.9784),
+    "jeddah": (21.4858, 39.1925),
+    "karachi": (24.8607, 67.0011),
+    "kuala lumpur": (3.1390, 101.6869),
+    "lucknow": (26.8467, 80.9462),
+    "madrid": (40.4168, -3.7038),
+    "manila": (14.5995, 120.9842),
+    "mexico city": (19.4326, -99.1332),
+    "milan": (45.4642, 9.1900),
+    "moscow": (55.7558, 37.6173),
+    "munich": (48.1351, 11.5820),
+    "panama city": (8.9824, -79.5199),
+    "qingdao": (36.0671, 120.3826),
+    "sao paulo": (-23.5505, -46.6333),
+    "shenzhen": (22.5431, 114.0579),
+    "singapore": (1.3521, 103.8198),
+    "taipei": (25.0330, 121.5654),
+    "tel aviv": (32.0853, 34.7818),
+    "warsaw": (52.2297, 21.0122),
+    "wuhan": (30.5928, 114.3055),
 }
+
+# Only generate picks for cities you can actually bet on.
+# Set to None or an empty set to disable filtering (consider all cities).
+TRADEABLE_CITIES = {"new york", "nyc", "miami", "chicago", "los angeles", "san francisco"}
 
 # Polymarket sweet spot per Polymarket System.md
 EDGE_MIN_PRICE = 0.60
@@ -41,9 +76,23 @@ EDGE_MAX_PRICE = 0.85
 # Minimum probability gap (model vs market) to flag as a pick
 MIN_EDGE = 0.10
 
+# Approximate forecast error (std dev, in degrees Fahrenheit) for daily high
+# temperature forecasts, by lead time in days. Same-day ("Today") markets are
+# tight because the day's high is often already close to observed; multi-day
+# forecasts widen based on typical NWS high-temp forecast error progression.
+# Source bucket is in °F; convert to °C (divide by 1.8) for °C buckets.
+TEMP_STD_DEV_BY_LEAD_DAYS = {
+    0: 1.5,
+    1: 2.5,
+    2: 3.5,
+    3: 4.5,
+    4: 5.5,
+}
+TEMP_STD_DEV_MAX_LEAD = 6.5  # used for any lead time beyond the table above
+
 # "Highest temperature in X on Y?" events live under this search term.
 SEARCH_API_URL = "https://gamma-api.polymarket.com/public-search"
 SEARCH_QUERY = "Highest temperature"
-MAX_SEARCH_PAGES = 20
+MAX_SEARCH_PAGES = 40
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"

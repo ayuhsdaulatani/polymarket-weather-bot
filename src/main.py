@@ -1,7 +1,7 @@
 """
-Daily entrypoint: scan Polymarket "Highest temperature in X" events, compare
-each degree-bucket's price against the Open-Meteo forecast, and report any
-buckets with an edge.
+Daily entrypoint: scan Polymarket "Highest temperature in X" events (limited
+to TRADEABLE_CITIES), compare each degree-bucket's price against the
+Open-Meteo forecast, and report any buckets with an edge.
 
 Usage:
     python -m src.main
@@ -11,39 +11,22 @@ import json
 from datetime import date
 from pathlib import Path
 
-from src.edge_engine import evaluate, rank_picks
-from src.openmeteo_client import get_forecast
-from src.parser import parse_event
-from src.polymarket_client import fetch_temperature_events
+from src.analysis import scored_buckets
+from src.config import EDGE_MAX_PRICE, EDGE_MIN_PRICE, MIN_EDGE, TRADEABLE_CITIES
+from src.edge_engine import rank_picks
 
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "data" / "output"
 
 
 def run() -> list[dict]:
-    events = fetch_temperature_events()
-    print(f"Fetched {len(events)} 'Highest temperature' events")
+    scored = scored_buckets(cities=TRADEABLE_CITIES or None)
+    print(f"Scored {len(scored)} buckets across tradeable cities")
 
-    picks = []
-    forecast_cache: dict[tuple[float, float, str], dict | None] = {}
-
-    for event in events:
-        bucket_markets = parse_event(event)
-        if not bucket_markets:
-            continue
-
-        first = bucket_markets[0]
-        cache_key = (first["lat"], first["lon"], first["target_date"])
-        if cache_key not in forecast_cache:
-            forecast_cache[cache_key] = get_forecast(*cache_key)
-        forecast = forecast_cache[cache_key]
-        if not forecast:
-            continue
-
-        for bucket_market in bucket_markets:
-            result = evaluate(bucket_market, forecast)
-            if result:
-                picks.append(result)
-
+    picks = [
+        s for s in scored
+        if EDGE_MIN_PRICE <= s["market_price"] <= EDGE_MAX_PRICE
+        and abs(s["edge"]) >= MIN_EDGE
+    ]
     return rank_picks(picks, top_n=10)
 
 

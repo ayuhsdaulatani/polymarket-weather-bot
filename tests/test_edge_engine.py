@@ -1,4 +1,28 @@
-from src.edge_engine import bucket_probability, evaluate, rank_picks
+from datetime import date
+
+from src.edge_engine import bucket_probability, days_ahead_for, evaluate, rank_picks, std_dev_f
+
+
+def test_std_dev_f_increases_with_lead_time():
+    assert std_dev_f(0) < std_dev_f(1) < std_dev_f(2) < std_dev_f(5)
+
+
+def test_std_dev_f_caps_for_far_future():
+    assert std_dev_f(30) == std_dev_f(10)
+
+
+def test_days_ahead_for():
+    assert days_ahead_for("2026-06-11", today=date(2026, 6, 11)) == 0
+    assert days_ahead_for("2026-06-14", today=date(2026, 6, 11)) == 3
+
+
+def test_bucket_probability_same_day_is_tighter_than_far_out():
+    # Bucket several degrees from the forecast: a tight (same-day) distribution
+    # assigns it almost no mass, a wide (far-out) distribution assigns more.
+    bucket = {"low": 102.0, "high": 103.0, "unit": "F"}
+    near = bucket_probability(bucket, forecast_temp_max_f=94.0, days_ahead=0)
+    far = bucket_probability(bucket, forecast_temp_max_f=94.0, days_ahead=5)
+    assert near < far
 
 
 def test_bucket_probability_centered_bucket_is_likely():
@@ -39,7 +63,7 @@ def _pick(market_price, bucket, forecast_high):
         "market_price": market_price,
         "question": "q",
         "city": "nyc",
-        "target_date": "2026-06-11",
+        "target_date": "2099-01-01",
         "bucket_label": "94-95°F",
     }
     forecast = {"temp_max_f": forecast_high}
