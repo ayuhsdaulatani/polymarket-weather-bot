@@ -100,18 +100,27 @@ EDGE_MAX_PRICE = 0.85
 MIN_EDGE = 0.10
 
 # Approximate forecast error (std dev, in degrees Fahrenheit) for daily high
-# temperature forecasts, by lead time in days. Same-day ("Today") markets are
-# tight because the day's high is often already close to observed; multi-day
-# forecasts widen based on typical NWS high-temp forecast error progression.
-# Source bucket is in °F; convert to °C (divide by 1.8) for °C buckets.
+# temperature forecasts, by lead time in days. Source bucket is in °F; convert
+# to °C (divide by 1.8) for °C buckets.
+#
+# Tuned via scripts/backtest.py against ~30 days of actual Open-Meteo forecast
+# history (previous-runs API) vs observed highs for the 5 tradeable cities.
+# The original table was too wide at every lead time -- actual std devs came
+# in at 1.65/2.06/2.56/3.55/3.70 for leads 0-4. Kept a small margin above the
+# measured values since 30 days is a limited sample.
 TEMP_STD_DEV_BY_LEAD_DAYS = {
-    0: 1.5,
-    1: 2.5,
-    2: 3.5,
-    3: 4.5,
-    4: 5.5,
+    0: 1.8,
+    1: 2.2,
+    2: 2.8,
+    3: 3.8,
+    4: 4.0,
 }
-TEMP_STD_DEV_MAX_LEAD = 6.5  # used for any lead time beyond the table above
+TEMP_STD_DEV_MAX_LEAD = 4.5  # used for any lead time beyond the table above
+
+# The ensemble consistently under-predicted observed highs by ~0.8-1.7°F
+# across all lead times in the same backtest. Add this back to the raw
+# weighted-median forecast to correct the bias.
+TEMP_BIAS_CORRECTION_F = 1.2
 
 # "Highest temperature in X on Y?" events live under this search term.
 SEARCH_API_URL = "https://gamma-api.polymarket.com/public-search"

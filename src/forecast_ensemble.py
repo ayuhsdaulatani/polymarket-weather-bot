@@ -9,7 +9,7 @@ between models is a useful confidence signal.
 
 import requests
 
-from src.config import GLOBAL_MODEL_WEIGHTS, OPEN_METEO_URL
+from src.config import GLOBAL_MODEL_WEIGHTS, OPEN_METEO_URL, TEMP_BIAS_CORRECTION_F
 
 # Default model set if no weights are given (used by callers/tests that
 # don't care about region-specific tuning).
@@ -54,9 +54,10 @@ def summarize_daily(daily: dict, weights: dict[str, float] = GLOBAL_MODEL_WEIGHT
 
         values = list(per_model.values())
         model_weights = [weights[m] for m in per_model]
+        raw_median = weighted_median(values, model_weights)
         results.append({
             "date": day,
-            "predicted_high_f": round(weighted_median(values, model_weights), 1),
+            "predicted_high_f": round(raw_median + TEMP_BIAS_CORRECTION_F, 1),
             "min_f": round(min(values), 1),
             "max_f": round(max(values), 1),
             "spread_f": round(max(values) - min(values), 1),

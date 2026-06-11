@@ -1,4 +1,4 @@
-from src.config import US_MODEL_WEIGHTS
+from src.config import TEMP_BIAS_CORRECTION_F, US_MODEL_WEIGHTS
 from src.forecast_ensemble import summarize_daily, weighted_median
 
 
@@ -25,8 +25,8 @@ def test_summarize_daily_basic():
     assert day1["date"] == "2026-06-11"
     assert day1["model_count"] == 6
     # weighted median (ecmwf x2.0, gfs x1.5, others x1.0; half of total 7.5 = 3.75)
-    # sorted: 81.4, 90.4, 91.3, 93.2(cum=4.0 >= 3.75) -> 93.2
-    assert day1["predicted_high_f"] == 93.2
+    # sorted: 81.4, 90.4, 91.3, 93.2(cum=4.0 >= 3.75) -> 93.2, plus bias correction
+    assert day1["predicted_high_f"] == round(93.2 + TEMP_BIAS_CORRECTION_F, 1)
     assert day1["min_f"] == 81.4
     assert day1["max_f"] == 96.8
     assert day1["spread_f"] == round(96.8 - 81.4, 1)
@@ -64,7 +64,7 @@ def test_summarize_daily_handles_missing_models():
     summary = summarize_daily(daily)
     assert len(summary) == 1
     assert summary[0]["model_count"] == 1
-    assert summary[0]["predicted_high_f"] == 90.0
+    assert summary[0]["predicted_high_f"] == round(90.0 + TEMP_BIAS_CORRECTION_F, 1)
 
 
 def test_summarize_daily_skips_days_with_no_data():
