@@ -17,13 +17,51 @@ from src.config import (
     TRADEABLE_CITIES,
     model_weights_for_city,
 )
-from src.edge_engine import bucket_probability_with_std, days_ahead_for, std_dev_f
+from src.edge_engine import days_ahead_for, std_dev_f
 from src.forecast_ensemble import get_ensemble_forecast
+from src.picks import best_bucket_for_forecast, confidence_label, daily_picks
 
 st.set_page_config(page_title="Polymarket Weather Bot", layout="wide")
 st.title("Polymarket Weather Bot")
 
 tradeable = sorted(TRADEABLE_CITIES) if TRADEABLE_CITIES else sorted(CITY_COORDS)
+
+# ---------------------------------------------------------------------------
+# Today's picks — the bot's own top picks, refreshed daily
+# ---------------------------------------------------------------------------
+st.header("Today's Picks")
+st.caption(
+    "The bot's own top picks: the bucket with the biggest gap between model "
+    "probability and market price, ranked by edge."
+)
+
+if st.button("Refresh picks", type="primary", key="refresh_top_picks") or "top_picks" not in st.session_state:
+    with st.spinner("Computing today's picks..."):
+        st.session_state["top_picks"] = daily_picks(tradeable, forecast_days=4, top_n=5)
+
+top_picks = st.session_state.get("top_picks", [])
+
+if top_picks:
+    picks_df = pd.DataFrame([
+        {
+            "City": p["city"].title(),
+            "Date": p["date"],
+            "Bet this range": p["bucket_label"],
+            "Predicted High (°F)": p["predicted_high_f"],
+            "Spread (°F)": p["spread_f"],
+            "Probability": f"{p['probability']:.0%}",
+            "Market price (Yes)": p["market_price"],
+            "Edge": f"{p['edge']:+.0%}",
+            "Confidence": p["confidence"],
+            "Note": p["note"] or "",
+        }
+        for p in top_picks
+    ])
+    st.dataframe(picks_df, use_container_width=True, hide_index=True)
+else:
+    st.info("No picks clear the minimum edge today.")
+
+st.divider()
 
 # ---------------------------------------------------------------------------
 # Highest temp forecast — the main thing: "will the high be over X?"
@@ -51,44 +89,13 @@ forecast_rows = st.session_state.get("forecast", [])
 bucket_map = st.session_state.get("bucket_map", {})
 
 
-def _confidence(prob: float) -> str:
-    if prob >= 0.45:
-        return "high"
-    if prob >= 0.25:
-        return "medium"
-    return "low"
-
-
-def _best_bucket(city: str, target_date: str, predicted_high: float, spread: float) -> dict | None:
-    """
-    Of the actual Polymarket buckets for this city/date, find the one with
-    the highest probability of containing the predicted high. Uncertainty is
-    the wider of the lead-time-based std dev and the model spread, so a big
-    model disagreement widens the range we consider.
-    """
-    bucket_markets = bucket_map.get((city, target_date), [])
-    if not bucket_markets:
-        return None
-
-    days_ahead = days_ahead_for(target_date)
-    std = max(std_dev_f(days_ahead), spread / 2)
-
-    best = None
-    for bm in bucket_markets:
-        prob = bucket_probability_with_std(bm["bucket"], predicted_high, std)
-        if best is None or prob > best["probability"]:
-            best = {
-                "bucket_label": bm["bucket_label"],
-                "probability": prob,
-                "market_price": bm.get("market_price"),
-            }
-    return best
-
-
 if forecast_rows:
     table_rows = []
     for r in forecast_rows:
-        best = _best_bucket(r["city"], r["date"], r["predicted_high_f"], r["spread_f"])
+        bucket_markets = bucket_map.get((r["city"], r["date"]), [])
+        days_ahead = days_ahead_for(r["date"])
+        std = max(std_dev_f(days_ahead), r["spread_f"] / 2)
+        best = best_bucket_for_forecast(bucket_markets, r["predicted_high_f"], std)
         table_rows.append({
             "City": r["city"].title(),
             "Date": r["date"],
@@ -97,7 +104,7 @@ if forecast_rows:
             "Spread (°F)": r["spread_f"],
             "Bet this range": best["bucket_label"] if best else "—",
             "Probability": f"{best['probability']:.0%}" if best else "—",
-            "Confidence": _confidence(best["probability"]) if best else "—",
+            "Confidence": confidence_label(best["probability"], r["spread_f"]) if best else "—",
             "Market price (Yes)": best["market_price"] if best else None,
         })
 
@@ -112,8 +119,9 @@ if forecast_rows:
         "'Bet this range' is the actual Polymarket bucket (e.g. '88-89°F') "
         "most likely to contain the predicted high, based on the ensemble "
         "forecast and an uncertainty band that widens when models disagree "
-        "(spread). Probability ≥45% = high confidence, ≥25% = medium, "
-        "below that = low — there's no clearly favored bucket."
+        "(spread). High confidence = probability ≥40% with model spread "
+        "≤4°F; medium = probability ≥25%; below that = low — there's no "
+        "clearly favored bucket."
     )
 else:
     st.info("Click 'Refresh forecast' to load.")
