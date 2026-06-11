@@ -9,6 +9,7 @@ from src.config import (
     MIN_EDGE,
     TEMP_STD_DEV_BY_LEAD_DAYS,
     TEMP_STD_DEV_MAX_LEAD,
+    std_dev_for,
 )
 
 
@@ -51,13 +52,14 @@ def bucket_probability_with_std(bucket: dict, forecast_temp_max_f: float, std_f:
     return _normal_cdf(high_bound, mean, std) - _normal_cdf(low_bound, mean, std)
 
 
-def bucket_probability(bucket: dict, forecast_temp_max_f: float, days_ahead: int = 1) -> float:
+def bucket_probability(bucket: dict, forecast_temp_max_f: float, days_ahead: int = 1, city: str | None = None) -> float:
     """
     Estimate P(actual high temp falls in this bucket) using a normal
     distribution centered on the Open-Meteo forecast. The standard deviation
-    widens with lead time (`days_ahead`).
+    widens with lead time (`days_ahead`) and is per-city when `city` is given.
     """
-    return bucket_probability_with_std(bucket, forecast_temp_max_f, std_dev_f(days_ahead))
+    std = std_dev_for(city, days_ahead) if city else std_dev_f(days_ahead)
+    return bucket_probability_with_std(bucket, forecast_temp_max_f, std)
 
 
 def score_bucket(parsed_market: dict, forecast: dict) -> dict | None:
@@ -72,7 +74,7 @@ def score_bucket(parsed_market: dict, forecast: dict) -> dict | None:
 
     days_ahead = days_ahead_for(parsed_market["target_date"])
     model_prob = bucket_probability(
-        parsed_market["bucket"], forecast["temp_max_f"], days_ahead
+        parsed_market["bucket"], forecast["temp_max_f"], days_ahead, parsed_market.get("city")
     )
     edge = model_prob - market_price
 

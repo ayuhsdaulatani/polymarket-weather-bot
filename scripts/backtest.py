@@ -1,12 +1,14 @@
 """
-Backtest the forecast-error (std dev) assumptions in src/config.py against real
-historical forecast accuracy.
+Backtest the forecast-error assumptions in src/config.py against real
+historical forecast accuracy, broken out per city and per model.
 
-For each tradeable city and each model used in its ensemble, pulls Open-Meteo's
+For each tradeable city and each model in its ensemble, pulls Open-Meteo's
 "previous runs" API (forecasts as they were actually issued N days before the
-target date) and compares the ensemble's predicted daily high to the observed
-daily high from the archive API. Reports the actual forecast error (mean +
-std dev) per lead time, alongside the current TEMP_STD_DEV_BY_LEAD_DAYS table.
+target date) and compares to the observed daily high from the archive API.
+
+Reports, per city and lead time:
+  - ensemble error (mean/std/skew) using the current model weights
+  - per-model error (mean/std), to inform re-tuning model weights
 
 Usage:
     python -m scripts.backtest
@@ -19,6 +21,7 @@ import requests
 
 from src.config import (
     CITY_COORDS,
+    TEMP_BIAS_CORRECTION_F,
     TEMP_STD_DEV_BY_LEAD_DAYS,
     TEMP_STD_DEV_MAX_LEAD,
     TRADEABLE_CITIES,
@@ -30,7 +33,7 @@ PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
 LEAD_DAYS = [0, 1, 2, 3, 4]
-PAST_DAYS = 30
+PAST_DAYS = 90
 
 
 def _hourly_var(lead: int) -> str:
@@ -38,7 +41,6 @@ def _hourly_var(lead: int) -> str:
 
 
 def _daily_max_by_date(times: list[str], values: list[float | None]) -> dict[str, float]:
-    """Collapse hourly (time, value) pairs into a per-date max, ignoring Nones."""
     by_date: dict[str, list[float]] = defaultdict(list)
     for t, v in zip(times, values):
         if v is None:
@@ -61,7 +63,7 @@ def fetch_model_forecasts(lat: float, lon: float, model: str) -> dict[int, dict[
             "past_days": PAST_DAYS,
             "models": model,
         },
-        timeout=30,
+        timeout=60,
     )
     resp.raise_for_status()
     hourly = resp.json().get("hourly", {})
@@ -88,18 +90,46 @@ def fetch_actual_highs(lat: float, lon: float) -> dict[str, float]:
             "temperature_unit": "fahrenheit",
             "timezone": "auto",
         },
-        timeout=30,
+        timeout=60,
     )
     resp.raise_for_status()
     daily = resp.json().get("daily", {})
     return dict(zip(daily.get("time", []), daily.get("temperature_2m_max", [])))
 
 
-def run() -> dict[int, list[float]]:
-    """Returns {lead_days: [signed errors across all cities/dates]}."""
-    errors_by_lead: dict[int, list[float]] = defaultdict(list)
+def _skewness(values: list[float]) -> float:
+    """Sample skewness (Fisher-Pearson). 0 = symmetric, >0 = long right tail."""
+    n = len(values)
+    if n < 3:
+        return 0.0
+    mean = statistics.mean(values)
+    std = statistics.stdev(values)
+    if std == 0:
+        return 0.0
+    m3 = sum((x - mean) ** 3 for x in values) / n
+    return m3 / (std ** 3)
 
+
+def run() -> dict:
+    """
+    Returns {city: {
+        "ensemble_errors": {lead: [errors]},
+        "model_errors": {model: {lead: [errors]}},
+    }}
+    """
+    results = {}
+
+    # de-dupe cities that share coordinates (e.g. "new york"/"nyc")
+    seen_coords = {}
+    cities = []
     for city in sorted(TRADEABLE_CITIES):
+        coord = CITY_COORDS[city]
+        if coord in seen_coords:
+            continue
+        seen_coords[coord] = city
+        cities.append(city)
+
+    for city in cities:
         lat, lon = CITY_COORDS[city]
         weights = _weights_for(city)
 
@@ -112,6 +142,9 @@ def run() -> dict[int, list[float]]:
             except Exception as e:
                 print(f"  [{city}] skipping {model}: {e}")
 
+        ensemble_errors: dict[int, list[float]] = defaultdict(list)
+        model_errors: dict[str, dict[int, list[float]]] = {m: defaultdict(list) for m in weights}
+
         for lead in LEAD_DAYS:
             for date, actual_high in actual.items():
                 model_values = []
@@ -119,33 +152,61 @@ def run() -> dict[int, list[float]]:
                 for model, by_lead in per_model_per_lead.items():
                     by_date = by_lead.get(lead, {})
                     if date in by_date:
-                        model_values.append(by_date[date])
+                        predicted = by_date[date]
+                        model_values.append(predicted)
                         model_w.append(weights[model])
+                        model_errors[model][lead].append(predicted - actual_high)
 
                 if not model_values:
                     continue
 
-                predicted = weighted_median(model_values, model_w)
-                errors_by_lead[lead].append(predicted - actual_high)
+                ensemble_pred = weighted_median(model_values, model_w)
+                ensemble_errors[lead].append(ensemble_pred - actual_high)
 
+        results[city] = {
+            "ensemble_errors": ensemble_errors,
+            "model_errors": model_errors,
+        }
         print(f"{city.title()} done")
 
-    return errors_by_lead
+    return results
 
 
-def report(errors_by_lead: dict[int, list[float]]) -> None:
+def report(results: dict) -> None:
     print()
-    print(f"{'Lead (days)':>12} {'N':>5} {'Mean error':>12} {'Std dev':>10} {'Current config':>16}")
-    for lead in LEAD_DAYS:
-        errors = errors_by_lead.get(lead, [])
-        if not errors:
-            continue
-        mean_err = statistics.mean(errors)
-        std_err = statistics.stdev(errors) if len(errors) > 1 else 0.0
-        current = TEMP_STD_DEV_BY_LEAD_DAYS.get(lead, TEMP_STD_DEV_MAX_LEAD)
-        print(f"{lead:>12} {len(errors):>5} {mean_err:>+12.2f} {std_err:>10.2f} {current:>16.2f}")
+    print("=" * 78)
+    print("ENSEMBLE ERROR BY CITY AND LEAD TIME (predicted - actual, °F)")
+    print("=" * 78)
+    print(f"{'City':<16}{'Lead':>5}{'N':>5}{'Mean':>8}{'Std':>8}{'Skew':>8}{'Cur. bias':>11}{'Cur. std':>10}")
+    for city, data in results.items():
+        for lead in LEAD_DAYS:
+            errors = data["ensemble_errors"].get(lead, [])
+            if not errors:
+                continue
+            mean_err = statistics.mean(errors)
+            std_err = statistics.stdev(errors) if len(errors) > 1 else 0.0
+            skew = _skewness(errors)
+            cur_std = TEMP_STD_DEV_BY_LEAD_DAYS.get(lead, TEMP_STD_DEV_MAX_LEAD)
+            print(
+                f"{city.title():<16}{lead:>5}{len(errors):>5}{mean_err:>+8.2f}{std_err:>8.2f}"
+                f"{skew:>+8.2f}{TEMP_BIAS_CORRECTION_F:>11.2f}{cur_std:>10.2f}"
+            )
+
+    print()
+    print("=" * 78)
+    print("PER-MODEL ERROR BY CITY (lead 1, mean +/- std, °F) -- for re-tuning weights")
+    print("=" * 78)
+    for city, data in results.items():
+        print(f"\n{city.title()}:")
+        for model, by_lead in data["model_errors"].items():
+            errors = by_lead.get(1, [])
+            if not errors:
+                continue
+            mean_err = statistics.mean(errors)
+            std_err = statistics.stdev(errors) if len(errors) > 1 else 0.0
+            print(f"  {model:<18} mean={mean_err:>+6.2f}  std={std_err:>5.2f}  n={len(errors)}")
 
 
 if __name__ == "__main__":
-    errors = run()
-    report(errors)
+    results = run()
+    report(results)

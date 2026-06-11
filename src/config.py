@@ -86,8 +86,43 @@ GLOBAL_MODEL_WEIGHTS = {
 }
 
 
+# Per-city overrides to US_MODEL_WEIGHTS, derived from scripts/backtest.py
+# (90-day per-model error by city, lead 1):
+#   - Los Angeles: ICON was wildly biased low (mean -6.2F) -> dropped. GEM was
+#     actually the best-calibrated model (mean +0.79F) -> kept at full weight.
+#   - San Francisco: ICON (mean -8.5F, std 7.2F) and GEM (mean -5.6F, std 4.0F)
+#     were both badly biased low for the coastal marine-layer pattern -> both
+#     dropped, leaving ECMWF + GFS.
+#   - New York: GEM was the worst model (mean -2.6F, std 3.2F) -> halved.
+CITY_MODEL_WEIGHTS = {
+    "los angeles": {
+        "ecmwf_ifs025": 2.0,
+        "gfs_seamless": 1.5,
+        "gem_seamless": 1.5,
+    },
+    "san francisco": {
+        "ecmwf_ifs025": 2.0,
+        "gfs_seamless": 1.5,
+    },
+    "new york": {
+        "ecmwf_ifs025": 2.0,
+        "gfs_seamless": 1.5,
+        "icon_seamless": 1.0,
+        "gem_seamless": 0.5,
+    },
+    "nyc": {
+        "ecmwf_ifs025": 2.0,
+        "gfs_seamless": 1.5,
+        "icon_seamless": 1.0,
+        "gem_seamless": 0.5,
+    },
+}
+
+
 def model_weights_for_city(city: str) -> dict[str, float]:
-    """Pick the model weight set for a city: US-tuned models for US cities."""
+    """Pick the model weight set for a city: per-city tuning, then US, then global."""
+    if city in CITY_MODEL_WEIGHTS:
+        return CITY_MODEL_WEIGHTS[city]
     if city in TRADEABLE_CITIES:
         return US_MODEL_WEIGHTS
     return GLOBAL_MODEL_WEIGHTS
@@ -101,13 +136,8 @@ MIN_EDGE = 0.10
 
 # Approximate forecast error (std dev, in degrees Fahrenheit) for daily high
 # temperature forecasts, by lead time in days. Source bucket is in °F; convert
-# to °C (divide by 1.8) for °C buckets.
-#
-# Tuned via scripts/backtest.py against ~30 days of actual Open-Meteo forecast
-# history (previous-runs API) vs observed highs for the 5 tradeable cities.
-# The original table was too wide at every lead time -- actual std devs came
-# in at 1.65/2.06/2.56/3.55/3.70 for leads 0-4. Kept a small margin above the
-# measured values since 30 days is a limited sample.
+# to °C (divide by 1.8) for °C buckets. Used as the fallback for cities without
+# a per-city table below.
 TEMP_STD_DEV_BY_LEAD_DAYS = {
     0: 1.8,
     1: 2.2,
@@ -117,10 +147,62 @@ TEMP_STD_DEV_BY_LEAD_DAYS = {
 }
 TEMP_STD_DEV_MAX_LEAD = 4.5  # used for any lead time beyond the table above
 
-# The ensemble consistently under-predicted observed highs by ~0.8-1.7°F
-# across all lead times in the same backtest. Add this back to the raw
-# weighted-median forecast to correct the bias.
+# Fallback bias correction (added to the raw weighted-median forecast) for
+# cities without a per-city table below.
 TEMP_BIAS_CORRECTION_F = 1.2
+
+# Per-city bias correction and std dev by lead time, derived from
+# scripts/backtest.py against 90 days of actual Open-Meteo forecast history
+# (previous-runs API) vs. observed highs (archive API) for each tradeable city.
+#
+# Bias correction = -(measured mean error), so the corrected forecast is
+# unbiased on average. Std dev = measured std dev with a small margin, since
+# 90 days is still a limited sample. Cities differ a lot: e.g. SF and NYC have
+# much wider/more biased multi-day forecasts than Miami.
+CITY_BIAS_CORRECTION_F = {
+    "chicago":       {0: 0.0, 1: 0.2, 2: 0.9, 3: 0.5, 4: 0.7},
+    "los angeles":   {0: 2.0, 1: 1.0, 2: 0.8, 3: 1.1, 4: 1.2},
+    "miami":         {0: 0.0, 1: 0.2, 2: 0.8, 3: 0.7, 4: 0.8},
+    "new york":      {0: 1.2, 1: 1.5, 2: 1.8, 3: 2.5, 4: 2.4},
+    "nyc":           {0: 1.2, 1: 1.5, 2: 1.8, 3: 2.5, 4: 2.4},
+    "san francisco": {0: 0.8, 1: 1.6, 2: 1.5, 3: 2.0, 4: 1.9},
+}
+CITY_STD_DEV_BY_LEAD_DAYS = {
+    "chicago":       {0: 1.9, 1: 2.8, 2: 3.0, 3: 3.3, 4: 4.0},
+    "los angeles":   {0: 1.0, 1: 1.9, 2: 2.2, 3: 2.5, 4: 2.9},
+    "miami":         {0: 1.0, 1: 1.6, 2: 1.7, 3: 2.1, 4: 2.1},
+    "new york":      {0: 1.4, 1: 2.2, 2: 3.0, 3: 4.3, 4: 4.5},
+    "nyc":           {0: 1.4, 1: 2.2, 2: 3.0, 3: 4.3, 4: 4.5},
+    "san francisco": {0: 2.0, 1: 2.5, 2: 3.2, 3: 3.5, 4: 3.6},
+}
+CITY_STD_DEV_MAX_LEAD = {
+    "chicago": 4.3,
+    "los angeles": 3.2,
+    "miami": 2.3,
+    "new york": 4.7,
+    "nyc": 4.7,
+    "san francisco": 3.8,
+}
+
+
+def bias_correction_for(city: str, days_ahead: int) -> float:
+    """Per-city, lead-time-dependent bias correction (°F), with a global fallback."""
+    table = CITY_BIAS_CORRECTION_F.get(city)
+    if table is None:
+        return TEMP_BIAS_CORRECTION_F
+    if days_ahead < 0:
+        days_ahead = 0
+    return table.get(days_ahead, table[max(table)])
+
+
+def std_dev_for(city: str, days_ahead: int) -> float:
+    """Per-city, lead-time-dependent forecast std dev (°F), with a global fallback."""
+    if days_ahead < 0:
+        days_ahead = 0
+    table = CITY_STD_DEV_BY_LEAD_DAYS.get(city)
+    if table is None:
+        return TEMP_STD_DEV_BY_LEAD_DAYS.get(days_ahead, TEMP_STD_DEV_MAX_LEAD)
+    return table.get(days_ahead, CITY_STD_DEV_MAX_LEAD[city])
 
 # "Highest temperature in X on Y?" events live under this search term.
 SEARCH_API_URL = "https://gamma-api.polymarket.com/public-search"

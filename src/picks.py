@@ -1,8 +1,8 @@
 """Generate daily 'best bet' picks: the highest-edge bucket per city/date."""
 
 from src.analysis import buckets_by_city_date
-from src.config import CITY_COORDS, model_weights_for_city
-from src.edge_engine import bucket_probability_with_std, days_ahead_for, std_dev_f
+from src.config import CITY_COORDS, model_weights_for_city, std_dev_for
+from src.edge_engine import bucket_probability_with_std, days_ahead_for
 from src.forecast_ensemble import get_ensemble_forecast
 
 
@@ -41,13 +41,13 @@ def daily_picks(cities: list[str], forecast_days: int = 4, top_n: int = 5, min_e
     for city in cities:
         lat, lon = CITY_COORDS[city]
         weights = model_weights_for_city(city)
-        for day in get_ensemble_forecast(lat, lon, forecast_days=forecast_days, weights=weights):
+        for day in get_ensemble_forecast(lat, lon, forecast_days=forecast_days, weights=weights, city=city):
             bucket_markets = bucket_map.get((city, day["date"]), [])
             if not bucket_markets:
                 continue
 
             days_ahead = days_ahead_for(day["date"])
-            std = max(std_dev_f(days_ahead), day["spread_f"] / 2)
+            std = max(std_dev_for(city, days_ahead), day["spread_f"] / 2)
 
             best = best_bucket_for_forecast(bucket_markets, day["predicted_high_f"], std)
             if best is None or best["market_price"] is None:

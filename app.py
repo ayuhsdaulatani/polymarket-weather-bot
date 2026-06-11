@@ -16,8 +16,9 @@ from src.config import (
     MIN_EDGE,
     TRADEABLE_CITIES,
     model_weights_for_city,
+    std_dev_for,
 )
-from src.edge_engine import days_ahead_for, std_dev_f
+from src.edge_engine import days_ahead_for
 from src.forecast_ensemble import get_ensemble_forecast
 from src.picks import best_bucket_for_forecast, confidence_label, daily_picks
 
@@ -80,7 +81,7 @@ if st.button("Refresh forecast", type="primary") or "forecast" not in st.session
         for city in tradeable:
             lat, lon = CITY_COORDS[city]
             weights = model_weights_for_city(city)
-            for day in get_ensemble_forecast(lat, lon, forecast_days=forecast_days, weights=weights):
+            for day in get_ensemble_forecast(lat, lon, forecast_days=forecast_days, weights=weights, city=city):
                 forecast_rows.append({"city": city, **day})
         st.session_state["forecast"] = forecast_rows
         st.session_state["bucket_map"] = buckets_by_city_date(set(tradeable))
@@ -94,7 +95,7 @@ if forecast_rows:
     for r in forecast_rows:
         bucket_markets = bucket_map.get((r["city"], r["date"]), [])
         days_ahead = days_ahead_for(r["date"])
-        std = max(std_dev_f(days_ahead), r["spread_f"] / 2)
+        std = max(std_dev_for(r["city"], days_ahead), r["spread_f"] / 2)
         best = best_bucket_for_forecast(bucket_markets, r["predicted_high_f"], std)
         table_rows.append({
             "City": r["city"].title(),
