@@ -51,3 +51,29 @@ def scored_buckets(cities: set[str] | None = None) -> list[dict]:
                 results.append(scored)
 
     return results
+
+
+def buckets_by_city_date(cities: set[str] | None = None) -> dict[tuple[str, str], list[dict]]:
+    """
+    Fetch all active "Highest temperature" events and group their parsed
+    bucket markets by (city, target_date).
+
+    If `cities` is given, only events for those cities (matching the keys
+    used in CITY_COORDS) are included.
+    """
+    events = fetch_temperature_events()
+
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for event in events:
+        bucket_markets = parse_event(event)
+        if not bucket_markets:
+            continue
+
+        first = bucket_markets[0]
+        if cities and first["city"] not in cities:
+            continue
+
+        key = (first["city"], first["target_date"])
+        grouped.setdefault(key, []).extend(bucket_markets)
+
+    return grouped

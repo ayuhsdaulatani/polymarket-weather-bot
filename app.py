@@ -8,7 +8,7 @@ Run with:
 import pandas as pd
 import streamlit as st
 
-from src.analysis import scored_buckets
+from src.analysis import buckets_by_city_date, scored_buckets
 from src.config import (
     CITY_COORDS,
     EDGE_MAX_PRICE,
@@ -17,6 +17,7 @@ from src.config import (
     TRADEABLE_CITIES,
     model_weights_for_city,
 )
+from src.edge_engine import bucket_probability_with_std, days_ahead_for, std_dev_f
 from src.forecast_ensemble import get_ensemble_forecast
 
 st.set_page_config(page_title="Polymarket Weather Bot", layout="wide")
@@ -34,16 +35,9 @@ st.caption(
 )
 
 forecast_days = st.slider("Days ahead to show", 1, 7, 3)
-threshold = st.number_input(
-    "Bet threshold: 'will the high be OVER ___ °F?'",
-    value=90.0,
-    step=1.0,
-    help="Used to suggest a YES/NO trade for each row, based on the predicted "
-         "high vs. this number and how much the models agree (spread).",
-)
 
 if st.button("Refresh forecast", type="primary") or "forecast" not in st.session_state:
-    with st.spinner("Fetching multi-model forecasts..."):
+    with st.spinner("Fetching multi-model forecasts and markets..."):
         forecast_rows = []
         for city in tradeable:
             lat, lon = CITY_COORDS[city]
@@ -51,41 +45,63 @@ if st.button("Refresh forecast", type="primary") or "forecast" not in st.session
             for day in get_ensemble_forecast(lat, lon, forecast_days=forecast_days, weights=weights):
                 forecast_rows.append({"city": city, **day})
         st.session_state["forecast"] = forecast_rows
+        st.session_state["bucket_map"] = buckets_by_city_date(set(tradeable))
 
 forecast_rows = st.session_state.get("forecast", [])
+bucket_map = st.session_state.get("bucket_map", {})
 
 
-def _confidence(spread: float) -> str:
-    if spread <= 2:
+def _confidence(prob: float) -> str:
+    if prob >= 0.45:
         return "high"
-    if spread <= 5:
+    if prob >= 0.25:
         return "medium"
     return "low"
 
 
-def _trade(predicted_high: float, spread: float, threshold: float) -> str:
-    margin = predicted_high - threshold
-    half_spread = spread / 2
-    if abs(margin) <= half_spread:
-        return "Skip — too close to call"
-    side = "YES (over)" if margin > 0 else "NO (under)"
-    return f"Bet {side}"
+def _best_bucket(city: str, target_date: str, predicted_high: float, spread: float) -> dict | None:
+    """
+    Of the actual Polymarket buckets for this city/date, find the one with
+    the highest probability of containing the predicted high. Uncertainty is
+    the wider of the lead-time-based std dev and the model spread, so a big
+    model disagreement widens the range we consider.
+    """
+    bucket_markets = bucket_map.get((city, target_date), [])
+    if not bucket_markets:
+        return None
+
+    days_ahead = days_ahead_for(target_date)
+    std = max(std_dev_f(days_ahead), spread / 2)
+
+    best = None
+    for bm in bucket_markets:
+        prob = bucket_probability_with_std(bm["bucket"], predicted_high, std)
+        if best is None or prob > best["probability"]:
+            best = {
+                "bucket_label": bm["bucket_label"],
+                "probability": prob,
+                "market_price": bm.get("market_price"),
+            }
+    return best
 
 
 if forecast_rows:
-    forecast_df = pd.DataFrame([
-        {
+    table_rows = []
+    for r in forecast_rows:
+        best = _best_bucket(r["city"], r["date"], r["predicted_high_f"], r["spread_f"])
+        table_rows.append({
             "City": r["city"].title(),
             "Date": r["date"],
             "Predicted High (°F)": r["predicted_high_f"],
             "Model range": f"{r['min_f']} – {r['max_f']}",
             "Spread (°F)": r["spread_f"],
-            "Models used": r["model_count"],
-            "Confidence": _confidence(r["spread_f"]),
-            "Trade": _trade(r["predicted_high_f"], r["spread_f"], threshold),
-        }
-        for r in forecast_rows
-    ])
+            "Bet this range": best["bucket_label"] if best else "—",
+            "Probability": f"{best['probability']:.0%}" if best else "—",
+            "Confidence": _confidence(best["probability"]) if best else "—",
+            "Market price (Yes)": best["market_price"] if best else None,
+        })
+
+    forecast_df = pd.DataFrame(table_rows)
     st.dataframe(forecast_df, use_container_width=True, hide_index=True)
 
     with st.expander("Per-model breakdown"):
@@ -93,11 +109,11 @@ if forecast_rows:
             st.write(f"**{r['city'].title()} — {r['date']}**: {r['per_model']}")
 
     st.info(
-        "Trade logic: if the predicted high is more than half the model "
-        "spread away from your threshold, that side is suggested with "
-        "confidence based on how tightly the models agree (spread ≤2°F = "
-        "high, ≤5°F = medium, >5°F = low). If the predicted high is within "
-        "half the spread of your threshold, it's a coin flip — skip it."
+        "'Bet this range' is the actual Polymarket bucket (e.g. '88-89°F') "
+        "most likely to contain the predicted high, based on the ensemble "
+        "forecast and an uncertainty band that widens when models disagree "
+        "(spread). Probability ≥45% = high confidence, ≥25% = medium, "
+        "below that = low — there's no clearly favored bucket."
     )
 else:
     st.info("Click 'Refresh forecast' to load.")

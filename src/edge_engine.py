@@ -31,26 +31,33 @@ def days_ahead_for(target_date: str, today: date | None = None) -> int:
     return (target - today).days
 
 
-def bucket_probability(bucket: dict, forecast_temp_max_f: float, days_ahead: int = 1) -> float:
+def bucket_probability_with_std(bucket: dict, forecast_temp_max_f: float, std_f: float) -> float:
     """
     Estimate P(actual high temp falls in this bucket) using a normal
-    distribution centered on the Open-Meteo forecast, with a half-degree
-    continuity correction at each bucket edge. The standard deviation widens
-    with lead time (`days_ahead`) and is converted to °C for °C-labeled
-    buckets.
+    distribution centered on `forecast_temp_max_f` with the given standard
+    deviation (in °F), with a half-degree continuity correction at each
+    bucket edge. The std dev is converted to °C for °C-labeled buckets.
     """
-    std = std_dev_f(days_ahead)
-
     if bucket["unit"] == "C":
         mean = (forecast_temp_max_f - 32) * 5 / 9
-        std = std / 1.8
+        std = std_f / 1.8
     else:
         mean = forecast_temp_max_f
+        std = std_f
 
     low_bound = -math.inf if bucket["low"] is None else bucket["low"] - 0.5
     high_bound = math.inf if bucket["high"] is None else bucket["high"] + 0.5
 
     return _normal_cdf(high_bound, mean, std) - _normal_cdf(low_bound, mean, std)
+
+
+def bucket_probability(bucket: dict, forecast_temp_max_f: float, days_ahead: int = 1) -> float:
+    """
+    Estimate P(actual high temp falls in this bucket) using a normal
+    distribution centered on the Open-Meteo forecast. The standard deviation
+    widens with lead time (`days_ahead`).
+    """
+    return bucket_probability_with_std(bucket, forecast_temp_max_f, std_dev_f(days_ahead))
 
 
 def score_bucket(parsed_market: dict, forecast: dict) -> dict | None:
