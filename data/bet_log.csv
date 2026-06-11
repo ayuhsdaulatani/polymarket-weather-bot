@@ -1,0 +1,6 @@
+date,city,bucket_label,entry_price,stake_usd,payout_if_win,model_probability_at_pick,model_predicted_high_f,model_spread_f,edge_at_pick,actual_high_f,result,notes
+2026-06-11,los angeles,80F or above,0.10,9.93,95,0.994,86.2,5.3,0.894,,,model strongly agreed - high confidence pick
+2026-06-11,nyc,92-93F,0.57,9.91,17,0.138,96.0,6.4,-0.432,,,model disagreed - market priced way above model probability
+2026-06-11,chicago,88-89F,0.18,9.88,53,0.057,82.9,6.5,-0.123,,,model disagreed - predicted high well below this bucket
+2026-06-11,miami,87-88F,0.30,8.69,28,0.472,87.0,2.2,0.172,,,model agreed - tight spread- second-best pick of the day
+2026-06-11,san francisco,90F or above,0.16,2.50,15,0.050,77.4,14.7,-0.110,,,model disagreed - predicted high far below this bucket
