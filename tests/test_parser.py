@@ -1,50 +1,76 @@
-from src.parser import find_city, find_date, parse_market
+from src.parser import find_city, parse_bucket, parse_event
 
 
 def test_find_city_match():
-    result = find_city("Will it rain in New York on June 15, 2026?")
+    result = find_city("Highest temperature in NYC on June 11?")
     assert result is not None
-    assert result[0] == "new york"
+    assert result[0] == "nyc"
 
 
 def test_find_city_no_match():
     assert find_city("Will the Lakers win tonight?") is None
 
 
-def test_find_date_from_text():
-    assert find_date("Will it rain on June 15, 2026?") == "2026-06-15"
+def test_parse_bucket_range():
+    assert parse_bucket("88-89°F") == {"low": 88.0, "high": 89.0, "unit": "F"}
 
 
-def test_find_date_fallback_to_end_date():
-    assert find_date("Will it rain in NYC?", "2026-06-20T00:00:00Z") == "2026-06-20"
+def test_parse_bucket_below():
+    assert parse_bucket("87°F or below") == {"low": None, "high": 87.0, "unit": "F"}
 
 
-def test_parse_market_rain():
-    market = {
+def test_parse_bucket_above():
+    assert parse_bucket("106°F or higher") == {"low": 106.0, "high": None, "unit": "F"}
+
+
+def test_parse_bucket_single_celsius():
+    assert parse_bucket("23°C") == {"low": 23.0, "high": 23.0, "unit": "C"}
+
+
+def test_parse_bucket_unrecognized():
+    assert parse_bucket("not a bucket") is None
+
+
+def _market(group_item_title, price="0.5", end_date="2026-06-11T12:00:00Z"):
+    return {
         "id": "1",
-        "question": "Will it rain in Chicago on June 15, 2026?",
-        "endDate": "2026-06-15T00:00:00Z",
-        "outcomePrices": '["0.65", "0.35"]',
+        "question": f"Will the highest temperature be {group_item_title} on June 11?",
+        "groupItemTitle": group_item_title,
+        "outcomePrices": json_prices(price),
+        "endDate": end_date,
     }
-    parsed = parse_market(market)
-    assert parsed["city"] == "chicago"
-    assert parsed["condition"] == "rain"
-    assert parsed["target_date"] == "2026-06-15"
-    assert parsed["market_price"] == 0.65
 
 
-def test_parse_market_temp_above():
-    market = {
-        "id": "2",
-        "question": "Will the high temperature in Miami be above 95°F on July 4, 2026?",
-        "endDate": "2026-07-04T00:00:00Z",
-        "outcomePrices": '["0.40", "0.60"]',
+def json_prices(yes_price):
+    import json
+    return json.dumps([yes_price, str(round(1 - float(yes_price), 4))])
+
+
+def test_parse_event_returns_bucket_markets():
+    event = {
+        "title": "Highest temperature in NYC on June 11?",
+        "markets": [
+            _market("87°F or below", "0.001"),
+            _market("88-89°F", "0.0175"),
+            _market("106°F or higher", "0.0005"),
+        ],
     }
-    parsed = parse_market(market)
-    assert parsed["condition"] == "temp_above"
-    assert parsed["threshold"] == 95.0
+    parsed = parse_event(event)
+    assert len(parsed) == 3
+    assert parsed[0]["city"] == "nyc"
+    assert parsed[0]["target_date"] == "2026-06-11"
+    assert parsed[1]["bucket"] == {"low": 88.0, "high": 89.0, "unit": "F"}
+    assert parsed[1]["market_price"] == 0.0175
 
 
-def test_parse_market_unknown_returns_none():
-    market = {"id": "3", "question": "Will the Lakers win the title?", "outcomePrices": "[]"}
-    assert parse_market(market) is None
+def test_parse_event_unknown_city_returns_empty():
+    event = {
+        "title": "Highest temperature in Atlantis on June 11?",
+        "markets": [_market("88-89°F")],
+    }
+    assert parse_event(event) == []
+
+
+def test_parse_event_non_temperature_returns_empty():
+    event = {"title": "Will the Lakers win the title?", "markets": []}
+    assert parse_event(event) == []

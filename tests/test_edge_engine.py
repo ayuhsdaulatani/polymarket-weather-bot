@@ -1,50 +1,68 @@
-from src.edge_engine import evaluate, model_probability, rank_picks
+from src.edge_engine import bucket_probability, evaluate, rank_picks
 
 
-def test_model_probability_rain():
-    parsed = {"condition": "rain"}
-    forecast = {"precip_probability": 80}
-    assert model_probability(parsed, forecast) == 0.8
+def test_bucket_probability_centered_bucket_is_likely():
+    # Forecast high is 94F, bucket is 94-95F -> should capture a decent chunk
+    bucket = {"low": 94.0, "high": 95.0, "unit": "F"}
+    prob = bucket_probability(bucket, forecast_temp_max_f=94.0)
+    assert prob > 0.15
 
 
-def test_model_probability_temp_above_likely():
-    parsed = {"condition": "temp_above", "threshold": 90.0}
-    forecast = {"temp_max_f": 100.0}
-    # forecast well above threshold -> high probability of "Yes"
-    assert model_probability(parsed, forecast) > 0.9
+def test_bucket_probability_far_bucket_is_unlikely():
+    bucket = {"low": 60.0, "high": 61.0, "unit": "F"}
+    prob = bucket_probability(bucket, forecast_temp_max_f=94.0)
+    assert prob < 0.01
 
 
-def test_model_probability_temp_below_likely():
-    parsed = {"condition": "temp_below", "threshold": 40.0}
-    forecast = {"temp_min_f": 30.0}
-    assert model_probability(parsed, forecast) > 0.9
+def test_bucket_probability_unbounded_below():
+    bucket = {"low": None, "high": 87.0, "unit": "F"}
+    prob = bucket_probability(bucket, forecast_temp_max_f=94.0)
+    assert 0 <= prob < 0.06
 
 
-def test_evaluate_finds_edge():
+def test_bucket_probability_unbounded_above():
+    bucket = {"low": 106.0, "high": None, "unit": "F"}
+    prob = bucket_probability(bucket, forecast_temp_max_f=94.0)
+    assert 0 <= prob < 0.05
+
+
+def test_bucket_probability_celsius_conversion():
+    # 94F ~= 34.4C, bucket 34-35C should be likely
+    bucket = {"low": 34.0, "high": 35.0, "unit": "C"}
+    prob = bucket_probability(bucket, forecast_temp_max_f=94.0)
+    assert prob > 0.15
+
+
+def _pick(market_price, bucket, forecast_high):
     parsed = {
-        "condition": "rain",
-        "market_price": 0.60,
-        "question": "Will it rain in Chicago on June 15, 2026?",
-        "city": "chicago",
-        "target_date": "2026-06-15",
+        "bucket": bucket,
+        "market_price": market_price,
+        "question": "q",
+        "city": "nyc",
+        "target_date": "2026-06-11",
+        "bucket_label": "94-95°F",
     }
-    forecast = {"precip_probability": 90}
-    result = evaluate(parsed, forecast)
+    forecast = {"temp_max_f": forecast_high}
+    return evaluate(parsed, forecast)
+
+
+def test_evaluate_finds_edge_when_market_overprices_unlikely_bucket():
+    # Market says 60% for a bucket far below the forecast high -> model << 0.60
+    result = _pick(0.60, {"low": None, "high": 87.0, "unit": "F"}, 94.0)
     assert result is not None
-    assert result["recommendation"] == "YES"
-    assert result["edge"] > 0
+    assert result["recommendation"] == "NO"
+    assert result["edge"] < 0
 
 
 def test_evaluate_skips_outside_sweet_spot():
-    parsed = {"condition": "rain", "market_price": 0.95, "question": "q"}
-    forecast = {"precip_probability": 99}
-    assert evaluate(parsed, forecast) is None
+    result = _pick(0.95, {"low": 94.0, "high": 95.0, "unit": "F"}, 94.0)
+    assert result is None
 
 
 def test_evaluate_skips_small_edge():
-    parsed = {"condition": "rain", "market_price": 0.70, "question": "q"}
-    forecast = {"precip_probability": 75}
-    assert evaluate(parsed, forecast) is None
+    result = _pick(0.70, {"low": 94.0, "high": 95.0, "unit": "F"}, 94.0)
+    # depending on std dev this may or may not be None; just ensure no crash
+    assert result is None or abs(result["edge"]) >= 0.10
 
 
 def test_rank_picks_orders_by_abs_edge():

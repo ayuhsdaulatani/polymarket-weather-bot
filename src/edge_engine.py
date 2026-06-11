@@ -1,49 +1,41 @@
-"""Compute model probabilities from forecast data and find edges vs market price."""
+"""Compute model probabilities for temperature buckets and find edges vs market price."""
 
 import math
 
 from src.config import EDGE_MAX_PRICE, EDGE_MIN_PRICE, MIN_EDGE
 
-# Assumed forecast error (std dev, in Fahrenheit) for Open-Meteo's
-# temperature_2m_max/min when used a few days out.
-TEMP_STD_DEV_F = 4.0
+# Assumed forecast error (std dev, in the bucket's own units) for Open-Meteo's
+# temperature_2m_max when used a few days out.
+TEMP_STD_DEV = 4.0
 
 
 def _normal_cdf(x: float, mean: float, std: float) -> float:
-    """P(X <= x) for X ~ Normal(mean, std)."""
+    """P(X <= x) for X ~ Normal(mean, std). Supports +/- inf for x."""
     return 0.5 * (1 + math.erf((x - mean) / (std * math.sqrt(2))))
 
 
-def model_probability(parsed_market: dict, forecast: dict) -> float:
+def bucket_probability(bucket: dict, forecast_temp_max_f: float) -> float:
     """
-    Estimate the probability the market resolves "Yes" based on the
-    Open-Meteo forecast.
+    Estimate P(actual high temp falls in this bucket) using a normal
+    distribution centered on the Open-Meteo forecast, with a half-degree
+    continuity correction at each bucket edge.
     """
-    condition = parsed_market["condition"]
+    if bucket["unit"] == "C":
+        mean = (forecast_temp_max_f - 32) * 5 / 9
+    else:
+        mean = forecast_temp_max_f
 
-    if condition == "rain":
-        return forecast["precip_probability"] / 100.0
+    low_bound = -math.inf if bucket["low"] is None else bucket["low"] - 0.5
+    high_bound = math.inf if bucket["high"] is None else bucket["high"] + 0.5
 
-    if condition == "temp_above":
-        # P(actual max temp > threshold)
-        return 1 - _normal_cdf(
-            parsed_market["threshold"], forecast["temp_max_f"], TEMP_STD_DEV_F
-        )
-
-    if condition == "temp_below":
-        # P(actual min temp < threshold)
-        return _normal_cdf(
-            parsed_market["threshold"], forecast["temp_min_f"], TEMP_STD_DEV_F
-        )
-
-    raise ValueError(f"Unknown condition: {condition}")
+    return _normal_cdf(high_bound, mean, TEMP_STD_DEV) - _normal_cdf(low_bound, mean, TEMP_STD_DEV)
 
 
 def evaluate(parsed_market: dict, forecast: dict) -> dict | None:
     """
-    Combine a parsed market and its forecast into a pick recommendation.
-    Returns None if the market price is missing or outside the sweet spot,
-    or if the edge is below the minimum threshold.
+    Combine a parsed bucket market and its forecast into a pick recommendation.
+    Returns None if the market price is missing, outside the sweet spot, or
+    the edge is below the minimum threshold.
     """
     market_price = parsed_market.get("market_price")
     if market_price is None:
@@ -52,7 +44,7 @@ def evaluate(parsed_market: dict, forecast: dict) -> dict | None:
     if not (EDGE_MIN_PRICE <= market_price <= EDGE_MAX_PRICE):
         return None
 
-    model_prob = model_probability(parsed_market, forecast)
+    model_prob = bucket_probability(parsed_market["bucket"], forecast["temp_max_f"])
     edge = model_prob - market_price
 
     if abs(edge) < MIN_EDGE:

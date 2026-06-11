@@ -1,96 +1,56 @@
-"""Parse Polymarket weather market questions into structured data."""
+"""Parse "Highest temperature in X on Y?" events into per-bucket market info."""
 
+import json
 import re
-from datetime import datetime
 
 from src.config import CITY_COORDS
 
-RAIN_RE = re.compile(r"\b(rain|snow|precipitation)\b", re.IGNORECASE)
-TEMP_ABOVE_RE = re.compile(
-    r"\b(above|over|higher than|more than)\s+(\d+)\s*°?\s*f", re.IGNORECASE
-)
-TEMP_BELOW_RE = re.compile(
-    r"\b(below|under|lower than|less than)\s+(\d+)\s*°?\s*f", re.IGNORECASE
-)
-DATE_RE = re.compile(r"\b(\w+ \d{1,2}(?:st|nd|rd|th)?,? \d{4})\b")
+BUCKET_RANGE_RE = re.compile(r"(-?\d+)\s*-\s*(-?\d+)\s*.?\s*([FC])", re.IGNORECASE)
+BUCKET_BELOW_RE = re.compile(r"(-?\d+)\s*.?\s*([FC])\s*or below", re.IGNORECASE)
+BUCKET_ABOVE_RE = re.compile(r"(-?\d+)\s*.?\s*([FC])\s*or (?:higher|above)", re.IGNORECASE)
+BUCKET_SINGLE_RE = re.compile(r"^(-?\d+)\s*.?\s*([FC])$", re.IGNORECASE)
 
 
-def find_city(question: str) -> tuple[str, float, float] | None:
-    """Find a known city name in the question text. Returns (name, lat, lon)."""
-    lowered = question.lower()
+def find_city(text: str) -> tuple[str, float, float] | None:
+    """Find a known city name in the text. Returns (name, lat, lon)."""
+    lowered = text.lower()
     for name, (lat, lon) in CITY_COORDS.items():
         if name in lowered:
             return name, lat, lon
     return None
 
 
-def find_date(question: str, end_date_iso: str | None = None) -> str | None:
+def parse_bucket(group_item_title: str) -> dict | None:
     """
-    Try to extract a target date (YYYY-MM-DD) from the question text.
-    Falls back to the market's end date if no date is mentioned.
-    """
-    match = DATE_RE.search(question)
-    if match:
-        raw = match.group(1).replace(",", "").replace("st", "").replace(
-            "nd", ""
-        ).replace("rd", "").replace("th", "")
-        for fmt in ("%B %d %Y", "%b %d %Y"):
-            try:
-                return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
-            except ValueError:
-                continue
+    Parse a bucket label like "88-89°F", "87°F or below", "106°F or higher",
+    or "23°C" into {"low": float|None, "high": float|None, "unit": "F"|"C"}.
 
-    if end_date_iso:
-        try:
-            return datetime.fromisoformat(
-                end_date_iso.replace("Z", "+00:00")
-            ).strftime("%Y-%m-%d")
-        except ValueError:
-            return None
+    `low`/`high` of None mean unbounded in that direction.
+    """
+    title = group_item_title.strip()
+
+    match = BUCKET_BELOW_RE.search(title)
+    if match:
+        return {"low": None, "high": float(match.group(1)), "unit": match.group(2).upper()}
+
+    match = BUCKET_ABOVE_RE.search(title)
+    if match:
+        return {"low": float(match.group(1)), "high": None, "unit": match.group(2).upper()}
+
+    match = BUCKET_RANGE_RE.search(title)
+    if match:
+        return {
+            "low": float(match.group(1)),
+            "high": float(match.group(2)),
+            "unit": match.group(3).upper(),
+        }
+
+    match = BUCKET_SINGLE_RE.search(title)
+    if match:
+        value = float(match.group(1))
+        return {"low": value, "high": value, "unit": match.group(2).upper()}
 
     return None
-
-
-def parse_market(market: dict) -> dict | None:
-    """
-    Parse a raw gamma API market dict into structured info needed for
-    a prediction, or None if it can't be parsed (unsupported question type
-    or unknown city).
-    """
-    question = market.get("question") or ""
-
-    city = find_city(question)
-    if not city:
-        return None
-    city_name, lat, lon = city
-
-    target_date = find_date(question, market.get("endDate"))
-    if not target_date:
-        return None
-
-    if RAIN_RE.search(question):
-        condition = "rain"
-        threshold = None
-    elif TEMP_ABOVE_RE.search(question):
-        condition = "temp_above"
-        threshold = float(TEMP_ABOVE_RE.search(question).group(2))
-    elif TEMP_BELOW_RE.search(question):
-        condition = "temp_below"
-        threshold = float(TEMP_BELOW_RE.search(question).group(2))
-    else:
-        return None
-
-    return {
-        "market_id": market.get("id"),
-        "question": question,
-        "city": city_name,
-        "lat": lat,
-        "lon": lon,
-        "target_date": target_date,
-        "condition": condition,
-        "threshold": threshold,
-        "market_price": _yes_price(market),
-    }
 
 
 def _yes_price(market: dict) -> float | None:
@@ -99,7 +59,6 @@ def _yes_price(market: dict) -> float | None:
     if not prices:
         return None
     if isinstance(prices, str):
-        import json
         try:
             prices = json.loads(prices)
         except ValueError:
@@ -108,3 +67,52 @@ def _yes_price(market: dict) -> float | None:
         return float(prices[0])
     except (IndexError, ValueError, TypeError):
         return None
+
+
+def parse_event(event: dict) -> list[dict]:
+    """
+    Parse a "Highest temperature in X on Y?" event into one entry per
+    temperature bucket market. Returns [] if the event isn't a recognized
+    temperature event, its city is unknown, or it has no usable markets.
+    """
+    title = event.get("title") or ""
+    if "highest temperature" not in title.lower():
+        return []
+
+    city = find_city(title)
+    if not city:
+        return []
+    city_name, lat, lon = city
+
+    markets = event.get("markets") or []
+    if not markets:
+        return []
+
+    end_date = markets[0].get("endDate")
+    if not end_date:
+        return []
+    target_date = end_date[:10]
+
+    parsed = []
+    for market in markets:
+        bucket = parse_bucket(market.get("groupItemTitle") or "")
+        if not bucket:
+            continue
+
+        price = _yes_price(market)
+        if price is None:
+            continue
+
+        parsed.append({
+            "market_id": market.get("id"),
+            "question": market.get("question"),
+            "bucket_label": market.get("groupItemTitle"),
+            "city": city_name,
+            "lat": lat,
+            "lon": lon,
+            "target_date": target_date,
+            "bucket": bucket,
+            "market_price": price,
+        })
+
+    return parsed

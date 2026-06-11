@@ -1,6 +1,8 @@
 """Static configuration: city coordinates and edge thresholds."""
 
-# Lat/lon for cities commonly used in Polymarket weather markets
+# Lat/lon for cities commonly used in Polymarket "Highest temperature in X" markets.
+# Keys are matched as substrings against event titles (lowercased), so keep
+# them specific enough to avoid false matches.
 CITY_COORDS = {
     "new york": (40.7128, -74.0060),
     "nyc": (40.7128, -74.0060),
@@ -23,6 +25,13 @@ CITY_COORDS = {
     "las vegas": (36.1699, -115.1398),
     "london": (51.5074, -0.1278),
     "paris": (48.8566, 2.3522),
+    "seoul": (37.5665, 126.9780),
+    "tokyo": (35.6762, 139.6503),
+    "hong kong": (22.3193, 114.1694),
+    "shanghai": (31.2304, 121.4737),
+    "wellington": (-41.2865, 174.7762),
+    "toronto": (43.6532, -79.3832),
+    "dubai": (25.2048, 55.2708),
 }
 
 # Polymarket sweet spot per Polymarket System.md
@@ -32,5 +41,9 @@ EDGE_MAX_PRICE = 0.85
 # Minimum probability gap (model vs market) to flag as a pick
 MIN_EDGE = 0.10
 
-GAMMA_API_URL = "https://gamma-api.polymarket.com/markets"
+# "Highest temperature in X on Y?" events live under this search term.
+SEARCH_API_URL = "https://gamma-api.polymarket.com/public-search"
+SEARCH_QUERY = "Highest temperature"
+MAX_SEARCH_PAGES = 20
+
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
