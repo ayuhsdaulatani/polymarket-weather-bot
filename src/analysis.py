@@ -73,6 +73,10 @@ def buckets_by_city_date(cities: set[str] | None = None) -> dict[tuple[str, str]
         if cities and first["city"] not in cities:
             continue
 
+        days_ahead = days_ahead_for(first["target_date"])
+        if not (0 <= days_ahead <= MAX_FORECAST_LEAD_DAYS):
+            continue
+
         key = (first["city"], first["target_date"])
         grouped.setdefault(key, []).extend(bucket_markets)
 
